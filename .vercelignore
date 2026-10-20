@@ -1,0 +1,35 @@
+# Exclude large model weights (500 MB)
+emotion_roberta_model/model.safetensors
+*.safetensors
+*.bin
+*.pt
+*.pth
+
+# Exclude training datasets & scripts
+training/
+
+# Exclude SQLite databases
+*.db
+*.sqlite
+mental_health.db
+
+# Exclude virtual environments & caches
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Git and dev files
+.git/
+.github/
+.gitignore
+.gitattributes
+requirements-local.txt
+Dockerfile
+render.yaml
+Procfile

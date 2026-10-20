@@ -41,11 +41,15 @@ A full-stack web application designed to facilitate mental health support throug
 
 3. **Install dependencies**
    ```bash
+   # For standard web server / serverless deployment (lightweight):
    pip install -r requirements.txt
+
+   # OR for full local PyTorch model inference & training:
+   pip install -r requirements-local.txt
    ```
 
-4. **Verify model files**
-   - Ensure the `emotion_roberta_model` directory exists with all model files:
+4. **Verify model files (optional for local PyTorch mode)**
+   - When running locally with PyTorch, ensure `emotion_roberta_model` directory exists:
      - `config.json`
      - `model.safetensors`
      - `tokenizer_config.json`
@@ -53,6 +57,7 @@ A full-stack web application designed to facilitate mental health support throug
      - `merges.txt`
      - `special_tokens_map.json`
      - `best_config.json`
+   - *Note: In serverless environments (e.g., Vercel), the app automatically uses the free cloud Hugging Face Inference API for the RoBERTa GoEmotions model without needing local model files.*
 
 5. **Run the application**
    ```bash
@@ -61,22 +66,25 @@ A full-stack web application designed to facilitate mental health support throug
 
 6. **Access the application**
    - Open your browser and navigate to: `http://localhost:5000`
-   - The application will automatically create the database on first run
+   - The application will automatically initialize the database on first run
 
 ## Requirements
 
-The following packages are required (automatically installed via `requirements.txt`):
+- **Production / Vercel (`requirements.txt`)**:
+  - Flask 3.0.0
+  - Flask-CORS 4.0.0
+  - Flask-Login 0.6.3
+  - Flask-SQLAlchemy 3.1.1
+  - Requests (>=2.28.0)
+  - Gunicorn (>=21.2.0)
 
-- Flask 3.0.0
-- Flask-CORS 4.0.0
-- Flask-Login 0.6.3
-- Flask-SQLAlchemy 3.1.1
-- PyTorch (>=2.0.0)
-- Transformers (>=4.30.0)
-- Pandas (>=2.0.0)
-- NumPy (>=1.24.0)
-- Scikit-learn (>=1.3.0)
-- tqdm (>=4.65.0)
+- **Local Machine / Model Training (`requirements-local.txt`)**:
+  - PyTorch (>=2.0.0)
+  - Transformers (>=4.30.0)
+  - Pandas (>=2.0.0)
+  - NumPy (>=1.24.0)
+  - Scikit-learn (>=1.3.0)
+  - tqdm (>=4.65.0)
 
 ## Usage
 
@@ -127,32 +135,42 @@ MentalHealthSupport/
 └── training/                   # Training data and scripts
 ```
 
+## Deployment Guide
+
+### Option 1: Deploying to Vercel (Serverless)
+
+This repository is pre-configured for seamless Vercel deployment with `vercel.json`, `api/index.py`, and `.vercelignore`.
+
+1. **Push your code to GitHub** (or connect your repo in Vercel Dashboard).
+2. **Import the repository into Vercel**.
+3. **Configure Environment Variables** in Vercel Project Settings:
+   - `FLASK_SECRET`: A secure random secret key (e.g. `openssl rand -hex 32`)
+   - `HF_TOKEN` (Optional): Your Hugging Face user access token for high-rate-limit serverless emotion detection inference.
+   - `DATABASE_URL` (Recommended for production): PostgreSQL connection string (from free hosts like Neon, Supabase, or Railway) to persist user accounts and appointments across serverless cold starts.
+4. **Click Deploy**. Vercel will install the lightweight `requirements.txt` (< 30 MB bundle) and your app will be live immediately!
+
+### Option 2: Deploying to Render / Railway / Fly.io (Container)
+
+For running the full local PyTorch model on a persistent server:
+- **Render**: Connect the repository and select **Web Service** (or use Blueprint with included `render.yaml`).
+- **Railway / Fly.io / Docker**: The repository includes `Dockerfile` and `Procfile`. Simply deploy using Docker runtime with `gunicorn`.
+
 ## Configuration
 
 ### Environment Variables
 
-- `FLASK_SECRET`: Secret key for Flask sessions (default: "change-me-in-prod")
-  - **Important**: Change this in production!
+- `FLASK_SECRET`: Secret key for Flask sessions (default: "change-me-in-prod"). **Change this in production!**
+- `DATABASE_URL`: PostgreSQL connection string (e.g., `postgresql://user:pass@host:5432/db`). If not set, falls back to SQLite.
+- `HF_TOKEN`: Hugging Face access token for cloud emotion detection inference.
+- `HF_EMOTION_MODEL`: Hugging Face model repository ID (default: `"SamLowe/roberta-base-go_emotions"`).
 
 ### Database
 
-The application uses SQLite by default. The database file (`mental_health.db`) is automatically created on first run.
-
-## Development
-
-### Running in Debug Mode
-
-The application runs in debug mode by default. For production:
-
-1. Set `FLASK_SECRET` environment variable
-2. Disable debug mode in `app.py`:
-   ```python
-   app.run(debug=False, host="0.0.0.0", port=5000)
-   ```
-
-### Database Reset
-
-To reset the database, delete `mental_health.db` and restart the application.
+The application supports both PostgreSQL and SQLite:
+- If `DATABASE_URL` is configured, it connects to PostgreSQL.
+- If not configured:
+  - In local/container environments, it stores SQLite at `mental_health.db`.
+  - In Vercel serverless environments, it routes SQLite to `/tmp/mental_health.db` to prevent read-only filesystem restrictions.
 
 ## Notes
 

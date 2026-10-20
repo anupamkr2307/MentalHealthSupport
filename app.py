@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from flask import (
     Flask,
@@ -38,18 +38,38 @@ from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import UniqueConstraint
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from step_inference import ImprovedEmotionDetector
+try:
+    from step_inference import ImprovedEmotionDetector
+except (ImportError, Exception):
+    ImprovedEmotionDetector = None
 
 # =============================================================================
 # Application Configuration
 # =============================================================================
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
-DB_PATH = os.path.join(BASE_DIR, "mental_health.db")
 
-app = Flask(__name__)
+app = Flask(
+    __name__,
+    template_folder=os.path.join(BASE_DIR, "templates"),
+    static_folder=os.path.join(BASE_DIR, "static"),
+)
 app.config["SECRET_KEY"] = os.environ.get("FLASK_SECRET", "change-me-in-prod")
-app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{DB_PATH}"
+
+# Support both SQLite and PostgreSQL (e.g. Supabase, Neon)
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if DATABASE_URL:
+    if DATABASE_URL.startswith("postgres://"):
+        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+    app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
+else:
+    # On Vercel, the filesystem is read-only except /tmp
+    if os.environ.get("VERCEL"):
+        DB_PATH = "/tmp/mental_health.db"
+    else:
+        DB_PATH = os.path.join(BASE_DIR, "mental_health.db")
+    app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{DB_PATH}"
+
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 CORS(app)
 
@@ -219,27 +239,177 @@ def ensure_patient():
 # Emotion Detection Model
 # =============================================================================
 
-detector: Optional[ImprovedEmotionDetector] = None
+GOEMOTIONS_DEFAULT = [
+    "admiration", "amusement", "anger", "annoyance", "approval", "caring",
+    "confusion", "curiosity", "desire", "disappointment", "disapproval", "disgust",
+    "embarrassment", "excitement", "fear", "gratitude", "grief", "joy", "love",
+    "nervousness", "optimism", "pride", "realization", "relief", "remorse",
+    "sadness", "surprise", "neutral",
+]
+
+EMOTION_KEYWORDS: Dict[str, List[str]] = {
+    "joy": ["happy", "great", "glad", "awesome", "delighted", "cheerful", "smile", "laugh", "excited", "fantastic"],
+    "sadness": ["sad", "depressed", "unhappy", "cry", "crying", "miserable", "sorrow", "heartbroken", "down"],
+    "anger": ["angry", "mad", "furious", "hate", "irritated", "rage", "outraged"],
+    "fear": ["scared", "afraid", "terrified", "panic", "horror", "frightened"],
+    "nervousness": ["nervous", "anxious", "anxiety", "worried", "stress", "stressed", "tense"],
+    "gratitude": ["thank", "thanks", "thankful", "grateful", "appreciate"],
+    "love": ["love", "caring", "adore", "sweetheart", "affection"],
+    "admiration": ["amazing", "impressive", "brilliant", "wonderful", "respect", "hero"],
+    "caring": ["care", "sympathy", "support", "help", "comfort"],
+    "grief": ["lost", "died", "death", "mourning", "loss", "bereavement"],
+    "optimism": ["hope", "hopeful", "positive", "future", "looking forward", "better"],
+    "relief": ["relieved", "safe", "finally", "calm now"],
+    "surprise": ["surprise", "surprised", "shock", "shocked", "unexpected", "wow"],
+    "confusion": ["confused", "puzzled", "what", "dont understand", "unclear"],
+    "disappointment": ["disappointed", "letdown", "bummer", "ruined", "failed"],
+    "disgust": ["disgusting", "gross", "nasty", "revolting"],
+    "remorse": ["sorry", "apologize", "regret", "guilty", "my fault"],
+}
+
+
+class RemoteEmotionDetector:
+    """
+    Serverless-friendly Emotion Detector.
+    
+    Queries Hugging Face's hosted inference API for the RoBERTa GoEmotions
+    model (SamLowe/roberta-base-go_emotions), with a resilient heuristic fallback
+    if offline, requiring zero local PyTorch or GPU resources.
+    """
+
+    def __init__(
+        self,
+        emotions: Optional[List[str]] = None,
+        hf_token: Optional[str] = None,
+    ):
+        self.emotions = emotions or GOEMOTIONS_DEFAULT.copy()
+        self.emotion_to_idx = {e: i for i, e in enumerate(self.emotions)}
+        self.hf_token = (
+            hf_token
+            or os.environ.get("HF_TOKEN")
+            or os.environ.get("HUGGINGFACE_API_KEY")
+        )
+        self.model_id = os.environ.get(
+            "HF_EMOTION_MODEL", "SamLowe/roberta-base-go_emotions"
+        )
+        self.api_url = f"https://api-inference.huggingface.co/models/{self.model_id}"
+
+    def predict_single(self, text: str, top_k: int = 5) -> List[Dict[str, Any]]:
+        """Predict top emotions for input text using HF API with local fallback."""
+        # 1. Try Hugging Face Inference API
+        try:
+            import requests
+
+            headers = {}
+            if self.hf_token:
+                headers["Authorization"] = f"Bearer {self.hf_token}"
+
+            resp = requests.post(
+                self.api_url,
+                headers=headers,
+                json={"inputs": text},
+                timeout=8,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, list) and len(data) > 0:
+                    items = data[0] if isinstance(data[0], list) else data
+                    results = []
+                    for item in items:
+                        lbl = str(item.get("label", "")).lower()
+                        score = float(item.get("score", 0.0))
+                        idx = self.emotion_to_idx.get(lbl, 0)
+                        results.append({
+                            "emotion": lbl,
+                            "confidence": round(score, 4),
+                            "idx": idx,
+                        })
+                    results.sort(key=lambda x: x["confidence"], reverse=True)
+                    return results[:top_k]
+            else:
+                print(f"[RemoteEmotionDetector] HF API response status: {resp.status_code}")
+        except Exception as exc:
+            print(f"[RemoteEmotionDetector] HF API call failed: {exc}")
+
+        # 2. Resilient heuristic fallback
+        return self._heuristic_predict(text, top_k)
+
+    def _heuristic_predict(self, text: str, top_k: int = 5) -> List[Dict[str, Any]]:
+        """Fallback prediction using keyword heuristic if external API is unreachable."""
+        text_lower = text.lower()
+        scores: Dict[str, float] = {}
+
+        for emotion, keywords in EMOTION_KEYWORDS.items():
+            matches = sum(1 for kw in keywords if kw in text_lower)
+            if matches > 0:
+                scores[emotion] = min(0.5 + (0.15 * matches), 0.95)
+
+        if not scores:
+            scores["neutral"] = 0.85
+
+        for e in self.emotions:
+            if e not in scores:
+                scores[e] = 0.02
+
+        sorted_emotions = sorted(
+            scores.items(), key=lambda x: x[1], reverse=True
+        )[:top_k]
+        return [
+            {
+                "emotion": emo,
+                "confidence": round(score, 4),
+                "idx": self.emotion_to_idx.get(emo, 0),
+            }
+            for emo, score in sorted_emotions
+        ]
+
+
+detector: Optional[Any] = None
 
 
 def load_model() -> bool:
     """
-    Load the emotion detection model from the model directory.
+    Load the emotion detection model.
+    Prefers local RoBERTa model if PyTorch and weights are present.
+    Falls back to serverless-friendly Hugging Face Inference API.
     
     Returns:
         True if model loaded successfully, False otherwise
     """
     global detector
+    model_dir = os.path.join(BASE_DIR, "emotion_roberta_model")
+    safetensors_path = os.path.join(model_dir, "model.safetensors")
+
+    # 1. Check if local PyTorch RoBERTa model exists and is importable
+    if ImprovedEmotionDetector is not None and os.path.exists(safetensors_path):
+        try:
+            print(f"Loading local RoBERTa model from {model_dir}...")
+            detector = ImprovedEmotionDetector(
+                model_path=model_dir, max_length=256, batch_size=16
+            )
+            print("Local emotion detection model loaded successfully.")
+            return True
+        except Exception as exc:
+            print(f"Warning: Could not load local model ({exc}), falling back to remote detector.")
+
+    # 2. Initialize Remote Serverless Detector
     try:
-        model_path = "emotion_roberta_model"
-        if not os.path.exists(model_path):
-            raise FileNotFoundError(f"Model directory not found: {model_path}")
-        detector = ImprovedEmotionDetector(
-            model_path=model_path, max_length=256, batch_size=16
-        )
+        mapping_path = os.path.join(BASE_DIR, "emotion_mapping.json")
+        emotions = None
+        if os.path.exists(mapping_path):
+            try:
+                import json
+                with open(mapping_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    emotions = data.get("emotions")
+            except Exception:
+                pass
+
+        detector = RemoteEmotionDetector(emotions=emotions)
+        print("Remote serverless emotion detector initialized.")
         return True
     except Exception as exc:
-        print(f"Error loading model: {exc}")
+        print(f"Error initializing remote emotion detector: {exc}")
         return False
 
 
