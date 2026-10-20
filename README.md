@@ -1,5 +1,8 @@
 # Mental Health Support Web Application
 
+> 🚀 **Live Production Deployment**: [mental-health-support-aan4-4nekj1i5g-anupamkr2307.vercel.app](https://mental-health-support-aan4-4nekj1i5g-anupamkr2307.vercel.app) | [mental-health-support-aan4.vercel.app](https://mental-health-support-aan4.vercel.app)  
+> 🔍 **Vercel Project**: [Vercel Deployment Details](https://vercel.com/anupamkr2307/mental-health-support-aan4/EsvVPtp2c3QmvwmyoqcLbva5bH8q)
+
 A full-stack web application designed to facilitate mental health support through secure doctor-patient interactions, appointment management, real-time chat, prescription management, and AI-powered emotion detection.
 
 ## Features
