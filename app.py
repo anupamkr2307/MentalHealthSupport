@@ -418,6 +418,7 @@ def load_model() -> bool:
 # =============================================================================
 
 @app.route("/")
+@app.route("/api/index")
 def home():
     """Render the home page."""
     return render_template("home.html")
